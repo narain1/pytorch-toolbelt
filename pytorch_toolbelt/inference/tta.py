@@ -17,11 +17,13 @@ __all__ = [
     "GeneralizedTTA",
     "MultiscaleTTA",
     "d2_image_augment",
+    "d2_labels_augment",
     "d2_image_deaugment",
     "d2_labels_deaugment",
     "d4_image2label",
     "d4_image2mask",
     "d4_image_augment",
+    "d4_labels_augment",
     "d4_image_deaugment",
     "d4_labels_deaugment",
     "fivecrop_image2label",
@@ -30,12 +32,18 @@ __all__ = [
     "fliplr_image2label",
     "fliplr_image2mask",
     "fliplr_image_augment",
+    "fliplr_labels_augment",
     "fliplr_image_deaugment",
     "fliplr_labels_deaugment",
     "flips_image_augment",
+    "flips_labels_augment",
     "flips_image_deaugment",
     "flips_labels_deaugment",
+    "flipud_image_augment",
+    "flipud_image_deaugment",
+    "flipud_labels_deaugment",
     "ms_image_augment",
+    "ms_labels_augment",
     "ms_image_deaugment",
     "tencrop_image2label",
 ]
@@ -236,11 +244,26 @@ def fliplr_image_augment(image: Tensor) -> Tensor:
 
     Returns:
         Tensor of [B * 2, C, H, W] shape with:
-            - Original tensor rotated by 180 degrees
-            - Horisonalty-flipped tensor
+            - Original tensor
+            - Horizontally-flipped tensor
 
     """
     return torch.cat([image, F.torch_fliplr(image)], dim=0)
+
+
+def flipud_image_augment(image: Tensor) -> Tensor:
+    """
+    Augment input tensor using flip from up to bottom
+    Args:
+        image: Tensor of [B,C,H,W] shape
+
+    Returns:
+        Tensor of [B * 2, C, H, W] shape with:
+            - Original tensor
+            - Vertically-flipped tensor
+
+    """
+    return torch.cat([image, F.torch_flipud(image)], dim=0)
 
 
 def fliplr_image_deaugment(image: Tensor, reduction: MaybeStrOrCallable = "mean") -> Tensor:
@@ -257,9 +280,25 @@ def fliplr_image_deaugment(image: Tensor, reduction: MaybeStrOrCallable = "mean"
     assert image.size(0) % 2 == 0
 
     b1, b2 = torch.chunk(image, 2)
-
     image: Tensor = torch.stack([b1, F.torch_fliplr(b2)])
+    return _deaugment_averaging(image, reduction=reduction)
 
+
+def flipud_image_deaugment(image: Tensor, reduction: MaybeStrOrCallable = "mean") -> Tensor:
+    """
+    Deaugment input tensor (output of the model) assuming the input was flipud-augmented image (See flipud_image_augment).
+    Args:
+        image: Tensor of [B * 2, C, H, W] shape
+        reduction: Reduction model for aggregating outputs. Default is taking mean.
+
+    Returns:
+        Tensor of [B, C, H, W] shape if reduction is not None or "none", otherwise returns de-augmented tensor of
+        [2, B, C, H, W] shape
+    """
+    assert image.size(0) % 2 == 0
+
+    b1, b2 = torch.chunk(image, 2)
+    image: Tensor = torch.stack([b1, F.torch_flipud(b2)])
     return _deaugment_averaging(image, reduction=reduction)
 
 
@@ -341,8 +380,7 @@ def d4_image_augment(image: Tensor) -> Tensor:
     """
     if image.size(2) != image.size(3):
         raise ValueError(
-            f"Input tensor must have number of rows equal to number of cols. "
-            f"Got input tensor of shape {image.size()}"
+            f"Input tensor must have number of rows equal to number of cols. " f"Got input tensor of shape {image.size()}"
         )
     image_t = F.torch_transpose(image)
     return torch.cat(
@@ -372,7 +410,7 @@ def d4_labels_deaugment(image: Tensor, reduction: MaybeStrOrCallable = "mean") -
         [8, B, C] shape
     """
     if image.size(0) % 8 != 0:
-        raise RuntimeError("Batch size must be divisable by 8")
+        raise RuntimeError("Batch size must be divisible by 8")
 
     b1, b2, b3, b4, b5, b6, b7, b8 = torch.chunk(image, 8)
     image: Tensor = torch.stack([b1, b2, b3, b4, b5, b7, b7, b8])
@@ -385,7 +423,7 @@ def d4_image_deaugment(image: Tensor, reduction: MaybeStrOrCallable = "mean") ->
     Deaugment input tensor (output of the model) assuming the input was D4-augmented image (See d4_augment).
     Args:
         image: Tensor of [B * 8, C, H, W] shape
-        average: If True performs averaging of 8 outputs, otherwise - summation.
+        reduction: Reduction model for aggregating outputs. Default is taking mean.
 
     Returns:
         Tensor of [B, C, H, W] shape if reduction is not None or "none", otherwise returns de-augmented tensor of
@@ -393,7 +431,7 @@ def d4_image_deaugment(image: Tensor, reduction: MaybeStrOrCallable = "mean") ->
 
     """
     if image.size(0) % 8 != 0:
-        raise RuntimeError("Batch size must be divisable by 8")
+        raise RuntimeError("Batch size must be divisible by 8")
 
     b1, b2, b3, b4, b5, b6, b7, b8 = torch.chunk(image, 8)
 
@@ -429,6 +467,22 @@ def flips_image_augment(image: Tensor) -> Tensor:
     return torch.cat([image, F.torch_fliplr(image), F.torch_flipud(image)], dim=0)
 
 
+def fliplr_labels_augment(labels: Tensor) -> Tensor:
+    return torch.cat([labels, labels], dim=0)
+
+
+def flips_labels_augment(labels: Tensor) -> Tensor:
+    return torch.cat([labels, labels, labels], dim=0)
+
+
+def d2_labels_augment(labels: Tensor) -> Tensor:
+    return torch.cat([labels, labels, labels, labels], dim=0)
+
+
+def d4_labels_augment(labels: Tensor) -> Tensor:
+    return torch.cat([labels, labels, labels, labels, labels, labels, labels, labels], dim=0)
+
+
 def flips_image_deaugment(image: Tensor, reduction: MaybeStrOrCallable = "mean",) -> Tensor:
     """
     Deaugment input tensor (output of the model) assuming the input was flip-augmented image (See flips_augment).
@@ -455,16 +509,34 @@ def fliplr_labels_deaugment(logits: Tensor, reduction: MaybeStrOrCallable = "mea
     Deaugment input tensor (output of the model) assuming the input was fliplr-augmented image (See fliplr_image_augment).
     Args:
         logits: Tensor of [B * 2, C] shape
-        reduction: If True performs averaging of 3 outputs, otherwise - summation.
+        reduction: If True performs averaging of 2 outputs, otherwise - summation.
 
     Returns:
         Tensor of [B, C, H, W] shape.
     """
     if logits.size(0) % 2 != 0:
-        raise RuntimeError("Batch size must be divisable by 2")
+        raise RuntimeError("Batch size must be divisible by 2")
 
     orig, flipped_lr = torch.chunk(logits, 2)
     logits: Tensor = torch.stack([orig, flipped_lr])
+    return _deaugment_averaging(logits, reduction=reduction)
+
+
+def flipud_labels_deaugment(logits: Tensor, reduction: MaybeStrOrCallable = "mean",) -> Tensor:
+    """
+    Deaugment input tensor (output of the model) assuming the input was flipud-augmented image (See flipud_image_augment).
+    Args:
+        logits: Tensor of [B * 2, C] shape
+        reduction: If True performs averaging of 2 outputs, otherwise - summation.
+
+    Returns:
+        Tensor of [B, C, H, W] shape.
+    """
+    if logits.size(0) % 2 != 0:
+        raise RuntimeError("Batch size must be divisible by 2")
+
+    orig, flipped_ud = torch.chunk(logits, 2)
+    logits: Tensor = torch.stack([orig, flipped_ud])
     return _deaugment_averaging(logits, reduction=reduction)
 
 
@@ -479,7 +551,7 @@ def flips_labels_deaugment(logits: Tensor, reduction: MaybeStrOrCallable = "mean
         Tensor of [B, C, H, W] shape.
     """
     if logits.size(0) % 3 != 0:
-        raise RuntimeError("Batch size must be divisable by 3")
+        raise RuntimeError("Batch size must be divisible by 3")
 
     orig, flipped_lr, flipped_ud = torch.chunk(logits, 3)
     logits: Tensor = torch.stack([orig, flipped_lr, flipped_ud])
@@ -495,6 +567,10 @@ class TTAWrapper(nn.Module):
 
     def forward(self, *input):
         return self.tta(self.model, *input)
+
+
+def ms_labels_augment(labels: Tensor, size_offsets: List[Union[int, Tuple[int, int]]]) -> List[Tensor]:
+    return [labels] * len(size_offsets)
 
 
 def ms_image_augment(
@@ -515,9 +591,7 @@ def ms_image_augment(
             augmented_inputs.append(image)
         else:
             scale_size = rows + rows_offset, cols + cols_offset
-            scaled_input = torch.nn.functional.interpolate(
-                image, size=scale_size, mode=mode, align_corners=align_corners
-            )
+            scaled_input = torch.nn.functional.interpolate(image, size=scale_size, mode=mode, align_corners=align_corners)
             augmented_inputs.append(scaled_input)
     return augmented_inputs
 
@@ -619,10 +693,8 @@ class GeneralizedTTA(nn.Module):
         # Augment & forward
         if isinstance(self.augment_fn, dict):
             if len(input) != 0:
-                raise ValueError("Input for GeneralizedTTA must be exactly one tensor")
-            augmented_inputs = dict(
-                (key, augment(value)) for (key, value), augment in zip(kwargs.items(), self.augment_fn)
-            )
+                raise ValueError("Input for GeneralizedTTA must not have positional arguments when augment_fn is dictionary")
+            augmented_inputs = dict((key, augment(kwargs[key])) for (key, augment) in self.augment_fn.items())
             outputs = self.model(**augmented_inputs)
         elif isinstance(self.augment_fn, (list, tuple)):
             if len(kwargs) != 0:

@@ -9,7 +9,7 @@ from ..common import make_n_channel_input
 from ...activations import ACT_SILU, get_activation_block
 
 __all__ = [
-    "TimmEfficientNetV2S",
+    "TimmEfficientNetV2",
 ]
 
 
@@ -45,12 +45,16 @@ def make_n_channel_input_conv2d_same(conv: nn.Conv2d, in_channels: int, mode="au
     return new_conv
 
 
-class TimmEfficientNetV2S(GenericTimmEncoder):
-    def __init__(self, pretrained=True, layers=None, activation: str = ACT_SILU, no_stride=False):
-        from timm.models.efficientnet import efficientnet_v2s
+class TimmEfficientNetV2(GenericTimmEncoder):
+    def __init__(
+        self, model_name: str = "efficientnetv2_rw_s", pretrained=True, layers=None, activation: str = ACT_SILU,
+    ):
+        from timm.models.factory import create_model
 
         act_layer = get_activation_block(activation)
-        encoder = efficientnet_v2s(pretrained=pretrained, features_only=True, act_layer=act_layer, drop_path_rate=0.05)
+        encoder = create_model(
+            model_name=model_name, pretrained=pretrained, features_only=True, act_layer=act_layer, drop_path_rate=0.05
+        )
         super().__init__(encoder, layers)
 
     @torch.jit.unused

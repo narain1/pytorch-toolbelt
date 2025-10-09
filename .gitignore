@@ -19,3 +19,5 @@ var/
 .idea/
 .pytest_cache/
 /tests/tta_eval.csv
+/tests/tmp.onnx
+/tests/test_plot_confusion_matrix.png

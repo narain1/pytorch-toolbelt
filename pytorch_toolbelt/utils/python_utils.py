@@ -1,6 +1,8 @@
-from typing import Any, Dict
+import numbers
+from typing import Any, Dict, Tuple, Union, Iterable
+from pytorch_toolbelt.utils.support import pytorch_toolbelt_deprecated
 
-__all__ = ["maybe_eval", "without", "load_yaml"]
+__all__ = ["maybe_eval", "without", "load_yaml", "as_tuple_of_two"]
 
 
 def maybe_eval(x: str) -> Any:
@@ -16,7 +18,7 @@ def maybe_eval(x: str) -> Any:
 
 def without(dictionary: Dict, key: str) -> Dict:
     """
-    Returns copy of dictionary without given key.
+    Return copy of dictionary without given key.
 
     Args:
         dictionary: Input dictionary
@@ -30,6 +32,7 @@ def without(dictionary: Dict, key: str) -> Dict:
     return dict((k, v) for (k, v) in dictionary.items() if k not in key)
 
 
+@pytorch_toolbelt_deprecated("This method is deprecated. Please use OmegaConf")
 def load_yaml(stream: Any):
     """
     Parse the first YAML document in a stream and produce the corresponding Python object.
@@ -39,11 +42,9 @@ def load_yaml(stream: Any):
 
     Args:
         stream:
-
-    Returns:
-
     """
-    import yaml, re
+    import yaml
+    import re
 
     loader = yaml.SafeLoader
     loader.add_implicit_resolver(
@@ -62,3 +63,23 @@ def load_yaml(stream: Any):
     )
 
     return yaml.load(stream, Loader=loader)
+
+
+def as_tuple_of_two(
+    value: Union[numbers.Number, Tuple[numbers.Number, numbers.Number]]
+) -> Tuple[numbers.Number, numbers.Number]:
+    """
+    Takes single number of tuple of two numbers and always returns a tuple of two numbers
+    Args:
+        value:
+
+    Returns:
+        512     - (512,512)
+        256,257 - (256, 257)
+    """
+    if isinstance(value, Iterable):
+        a, b = value
+        return a, b
+    if isinstance(value, numbers.Number):
+        return value, value
+    raise RuntimeError(f"Unsupported input value {value}")

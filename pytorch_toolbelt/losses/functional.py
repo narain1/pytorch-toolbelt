@@ -12,6 +12,7 @@ __all__ = [
     "soft_jaccard_score",
     "soft_dice_score",
     "wing_loss",
+    "log_cosh_loss",
 ]
 
 
@@ -24,6 +25,10 @@ def focal_loss_with_logits(
     normalized: bool = False,
     reduced_threshold: Optional[float] = None,
     eps: float = 1e-6,
+    ignore_index=None,
+    activation: str = "sigmoid",
+    softmax_dim: Optional[int] = None,
+    class_weights: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Compute binary focal loss between target and output logits.
 
@@ -44,37 +49,60 @@ def focal_loss_with_logits(
             'batchwise_mean' computes mean loss per sample in batch. Default: 'mean'
         normalized (bool): Compute normalized focal loss (https://arxiv.org/pdf/1909.07829.pdf).
         reduced_threshold (float, optional): Compute reduced focal loss (https://arxiv.org/abs/1903.01347).
+        activation: Either sigmoid or softmax. If `softmax` is used, `softmax_dim` must be also specified.
 
     References:
         https://github.com/open-mmlab/mmdetection/blob/master/mmdet/core/loss/losses.py
     """
-    target = target.type_as(output)
+    output = output.float()
+    target = target.float()
 
-    logpt = F.binary_cross_entropy_with_logits(output, target, reduction="none")
-    pt = torch.exp(-logpt)
+    with torch.amp.autocast(device_type=output.device.type, enabled=False):
+        if activation == "sigmoid":
+            p = torch.sigmoid(output)
+        else:
+            p = torch.softmax(output, dim=softmax_dim)
 
-    # compute the loss
-    if reduced_threshold is None:
-        focal_term = (1.0 - pt).pow(gamma)
-    else:
-        focal_term = ((1.0 - pt) / reduced_threshold).pow(gamma)
-        focal_term[pt < reduced_threshold] = 1
+        ce_loss = F.binary_cross_entropy_with_logits(output, target, reduction="none")
+        pt = p * target + (1 - p) * (1 - target)
 
-    loss = focal_term * logpt
+        # compute the loss
+        if reduced_threshold is None:
+            focal_term = (1.0 - pt).pow(gamma)
+        else:
+            focal_term = ((1.0 - pt) / (1 - reduced_threshold)).pow(
+                gamma
+            )  # the focal term continuity breaks when reduced_threshold not equal to 0.5. At pt equal to reduced_threshold, the value of piecewise function of focal term should be 1 from both sides .
+            focal_term = torch.masked_fill(focal_term, pt < reduced_threshold, 1)
 
-    if alpha is not None:
-        loss *= alpha * target + (1 - alpha) * (1 - target)
+        loss = focal_term * ce_loss
 
-    if normalized:
-        norm_factor = focal_term.sum(dtype=torch.float32).clamp_min(eps)
-        loss /= norm_factor
+        if alpha is not None:
+            loss *= alpha * target + (1 - alpha) * (1 - target)
 
-    if reduction == "mean":
-        loss = loss.mean()
-    if reduction == "sum":
-        loss = loss.sum(dtype=torch.float32)
-    if reduction == "batchwise_mean":
-        loss = loss.sum(dim=0, dtype=torch.float32)
+        if class_weights is not None:
+            # class_weights is of shape [C]
+            # Loss is of shape [B,C ...]
+            # Reshape class_weights to [1, C, ...]
+            class_weights = class_weights.view(1, -1, *(1 for _ in range(loss.dim() - 2)))
+            loss *= class_weights
+
+        if ignore_index is not None:
+            ignore_mask = target.eq(ignore_index)
+            loss = torch.masked_fill(loss, ignore_mask, 0)
+            if normalized:
+                focal_term = torch.masked_fill(focal_term, ignore_mask, 0)
+
+        if normalized:
+            norm_factor = focal_term.sum(dtype=torch.float32).clamp_min(eps)
+            loss /= norm_factor
+
+        if reduction == "mean":
+            loss = loss.mean()
+        if reduction == "sum":
+            loss = loss.sum()
+        if reduction == "batchwise_mean":
+            loss = loss.sum(dim=0)
 
     return loss
 
@@ -82,19 +110,22 @@ def focal_loss_with_logits(
 def softmax_focal_loss_with_logits(
     output: torch.Tensor,
     target: torch.Tensor,
+    class_weights: Optional[torch.Tensor] = None,
     gamma: float = 2.0,
-    reduction="mean",
-    normalized=False,
+    reduction: str = "mean",
+    normalized: bool = False,
     reduced_threshold: Optional[float] = None,
     eps: float = 1e-6,
+    ignore_index: int = -100,
 ) -> torch.Tensor:
     """
     Softmax version of focal loss between target and output logits.
-    See :class:`~pytorch_toolbelt.losses.FocalLoss` for details.
+    See :class:`~pytorch_toolbelt.losses.CrossEntropyFocalLoss` for details.
 
     Args:
         output: Tensor of shape [B, C, *] (Similar to nn.CrossEntropyLoss)
         target: Tensor of shape [B, *] (Similar to nn.CrossEntropyLoss)
+        gamma: Focal loss power factor
         reduction (string, optional): Specifies the reduction to apply to the output:
             'none' | 'mean' | 'sum' | 'batchwise_mean'. 'none': no reduction will be applied,
             'mean': the sum of the output will be divided by the number of
@@ -105,21 +136,30 @@ def softmax_focal_loss_with_logits(
         normalized (bool): Compute normalized focal loss (https://arxiv.org/pdf/1909.07829.pdf).
         reduced_threshold (float, optional): Compute reduced focal loss (https://arxiv.org/abs/1903.01347).
     """
-    log_softmax = F.log_softmax(output, dim=1)
+    ignore_mask = target.eq(ignore_index)
+    pos_mask = ~ignore_mask
+    targets_masked = torch.masked_fill(target, ignore_mask, 0)
+    targets_oh = F.one_hot(targets_masked, num_classes=output.size(1)).moveaxis(-1, 1).float()
+    probs = F.softmax(output, dim=1)
+    pt = (1 - targets_oh) * probs + targets_oh * (1 - probs)
 
-    loss = F.nll_loss(log_softmax, target, reduction="none")
-    pt = torch.exp(-loss)
+    loss = F.binary_cross_entropy_with_logits(output, targets_oh, reduction="none")
 
     # compute the loss
     if reduced_threshold is None:
-        focal_term = (1.0 - pt).pow(gamma)
+        focal_term = pt.pow(gamma)
     else:
-        focal_term = ((1.0 - pt) / reduced_threshold).pow(gamma)
+        focal_term = (pt / reduced_threshold).pow(gamma)
         focal_term[pt < reduced_threshold] = 1
 
     loss = focal_term * loss
+    if class_weights is not None:
+        class_weights = class_weights.reshape(1, -1, *[1 for _ in range(loss.dim() - 2)])
+        loss = loss * class_weights
+    loss = loss.sum(dim=1) * pos_mask
 
     if normalized:
+        # Does not really work, will be removed in future
         norm_factor = focal_term.sum().clamp_min(eps)
         loss = loss / norm_factor
 
@@ -281,3 +321,22 @@ def label_smoothed_nll_loss(
     eps_i = epsilon / lprobs.size(dim)
     loss = (1.0 - epsilon) * nll_loss + eps_i * smooth_loss
     return loss
+
+
+def log_cosh_loss(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+    """
+    Numerically stable log-cosh implementation.
+    Reference: https://datascience.stackexchange.com/questions/96271/logcoshloss-on-pytorch
+
+    Args:
+        y_pred:
+        y_true:
+
+    Returns:
+
+    """
+
+    def _log_cosh(x: torch.Tensor) -> torch.Tensor:
+        return x + torch.nn.functional.softplus(-2.0 * x) - math.log(2.0)
+
+    return torch.mean(_log_cosh(y_pred - y_true))

@@ -352,7 +352,6 @@ class HRNetEncoderBase(EncoderModule):
         return nn.Sequential(*layers)
 
     def _make_stage(self, layer_config, num_inchannels, multi_scale_output=True):
-
         blocks_dict = {"BASIC": HRNetBasicBlock, "BOTTLENECK": HRNetBottleneck}
 
         num_modules = layer_config["NUM_MODULES"]
@@ -415,7 +414,7 @@ class HRNetEncoderBase(EncoderModule):
         outputs = _take([layer0] + y_list, self._layers)
         return outputs
 
-    def change_input_channels(self, input_channels: int, mode="auto"):
+    def change_input_channels(self, input_channels: int, mode="auto", **kwargs):
         self.layer0.conv1 = make_n_channel_input(self.layer0.conv1, input_channels, mode)
         return self
 

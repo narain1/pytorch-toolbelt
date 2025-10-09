@@ -1,9 +1,9 @@
-import torch
 from typing import Optional
-from torch import nn, Tensor
-import torch.nn.functional as F
 
-__all__ = ["BiTemperedLogisticLoss"]
+import torch
+from torch import nn, Tensor
+
+__all__ = ["BiTemperedLogisticLoss", "BinaryBiTemperedLogisticLoss"]
 
 
 def log_t(u, t):
@@ -22,8 +22,8 @@ def exp_t(u, t):
         return (1.0 + (1.0 - t) * u).relu().pow(1.0 / (1.0 - t))
 
 
-def compute_normalization_fixed_point(activations, t, num_iters):
-    """Returns the normalization value for each example (t > 1.0).
+def compute_normalization_fixed_point(activations: Tensor, t: float, num_iters: int) -> Tensor:
+    """Return the normalization value for each example (t > 1.0).
     Args:
       activations: A multi-dimensional tensor with last dimension `num_classes`.
       t: Temperature 2 (> 1.0 for tail heaviness).
@@ -45,15 +45,14 @@ def compute_normalization_fixed_point(activations, t, num_iters):
     return normalization_constants
 
 
-def compute_normalization_binary_search(activations, t, num_iters):
-    """Returns the normalization value for each example (t < 1.0).
+def compute_normalization_binary_search(activations: Tensor, t: float, num_iters: int) -> Tensor:
+    """Compute normalization value for each example (t < 1.0).
     Args:
       activations: A multi-dimensional tensor with last dimension `num_classes`.
       t: Temperature 2 (< 1.0 for finite support).
       num_iters: Number of iterations to run the method.
     Return: A tensor of same rank as activation with the last dimension being 1.
     """
-
     mu, _ = torch.max(activations, -1, keepdim=True)
     normalized_activations = activations - mu
 
@@ -106,7 +105,7 @@ class ComputeNormalization(torch.autograd.Function):
 
 
 def compute_normalization(activations, t, num_iters=5):
-    """Returns the normalization value for each example.
+    """Compute normalization value for each example.
     Backward pass is implemented.
     Args:
       activations: A multi-dimensional tensor with last dimension `num_classes`.
@@ -151,7 +150,6 @@ def bi_tempered_logistic_loss(activations, labels, t1, t2, label_smoothing=0.0, 
     Returns:
       A loss tensor.
     """
-
     if len(labels.shape) < len(activations.shape):  # not one-hot
         labels_onehot = torch.zeros_like(activations)
         labels_onehot.scatter_(1, labels[..., None], 1)
@@ -183,16 +181,104 @@ def bi_tempered_logistic_loss(activations, labels, t1, t2, label_smoothing=0.0, 
 
 
 class BiTemperedLogisticLoss(nn.Module):
-    def __init__(self, t1, t2, smoothing=0.0):
+    """
+
+    https://ai.googleblog.com/2019/08/bi-tempered-logistic-loss-for-training.html
+    https://arxiv.org/abs/1906.03361
+    """
+
+    def __init__(self, t1: float, t2: float, smoothing=0.0, ignore_index=None, reduction: str = "mean"):
+        """
+
+        Args:
+            t1:
+            t2:
+            smoothing:
+            ignore_index:
+            reduction:
+        """
         super(BiTemperedLogisticLoss, self).__init__()
         self.t1 = t1
         self.t2 = t2
         self.smoothing = smoothing
+        self.reduction = reduction
+        self.ignore_index = ignore_index
 
-    def forward(self, logit_label, truth_label):
-        loss_label = bi_tempered_logistic_loss(
-            logit_label, truth_label, t1=self.t1, t2=self.t2, label_smoothing=self.smoothing, reduction="none"
+    def forward(self, predictions: Tensor, targets: Tensor) -> Tensor:
+        loss = bi_tempered_logistic_loss(
+            predictions, targets, t1=self.t1, t2=self.t2, label_smoothing=self.smoothing, reduction="none"
         )
 
-        loss_label = loss_label.mean()
-        return loss_label
+        if self.ignore_index is not None:
+            mask = ~targets.eq(self.ignore_index)
+            loss *= mask
+
+        if self.reduction == "mean":
+            loss = loss.mean()
+        elif self.reduction == "sum":
+            loss = loss.sum()
+        return loss
+
+
+class BinaryBiTemperedLogisticLoss(nn.Module):
+    """
+    Modification of BiTemperedLogisticLoss for binary classification case.
+    It's signature matches nn.BCEWithLogitsLoss: Predictions and target tensors must have shape [B,1,...]
+
+    References:
+        https://ai.googleblog.com/2019/08/bi-tempered-logistic-loss-for-training.html
+        https://arxiv.org/abs/1906.03361
+    """
+
+    def __init__(
+        self, t1: float, t2: float, smoothing: float = 0.0, ignore_index: Optional[int] = None, reduction: str = "mean"
+    ):
+        """
+
+        Args:
+            t1:
+            t2:
+            smoothing:
+            ignore_index:
+            reduction:
+        """
+        super().__init__()
+        self.t1 = t1
+        self.t2 = t2
+        self.smoothing = smoothing
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+    def forward(self, predictions: Tensor, targets: Tensor) -> Tensor:
+        """
+        Forward method of the loss function
+
+        Args:
+            predictions: [B,1,...]
+            targets: [B,1,...]
+
+        Returns:
+            Zero-sized tensor with reduced loss if self.reduction is `sum` or `mean`; Otherwise returns loss of the
+            shape of `predictions` tensor.
+        """
+        if predictions.size(1) != 1 or targets.size(1) != 1:
+            raise ValueError("Channel dimension for predictions and targets must be equal to 1")
+
+        loss = bi_tempered_logistic_loss(
+            torch.cat([-predictions, predictions], dim=1).moveaxis(1, -1),
+            torch.cat([1 - targets, targets], dim=1).moveaxis(1, -1),
+            t1=self.t1,
+            t2=self.t2,
+            label_smoothing=self.smoothing,
+            reduction="none",
+        ).unsqueeze(dim=1)
+
+        if self.ignore_index is not None:
+            mask = targets.eq(self.ignore_index)
+            loss = torch.masked_fill(loss, mask, 0)
+
+        if self.reduction == "mean":
+            loss = loss.mean()
+        elif self.reduction == "sum":
+            loss = loss.sum()
+        return loss

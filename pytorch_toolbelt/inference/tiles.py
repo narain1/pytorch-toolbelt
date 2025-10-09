@@ -1,16 +1,16 @@
 """Implementation of tile-based inference allowing to predict huge images that does not fit into GPU memory entirely
 in a sliding-window fashion and merging prediction mask back to full-resolution.
 """
+
+import dataclasses
 import math
-from typing import List, Iterable
+from typing import List, Iterable, Tuple, Union, Sequence
 
 import cv2
 import numpy as np
 import torch
 
-from pytorch_toolbelt.utils import pytorch_toolbelt_deprecated
-
-__all__ = ["ImageSlicer", "TileMerger", "CudaTileMerger", "compute_pyramid_patch_weight_loss"]
+__all__ = ["ImageSlicer", "TileMerger", "compute_pyramid_patch_weight_loss"]
 
 
 def compute_pyramid_patch_weight_loss(width: int, height: int) -> np.ndarray:
@@ -51,11 +51,15 @@ def compute_pyramid_patch_weight_loss(width: int, height: int) -> np.ndarray:
 
 
 class ImageSlicer:
+    tile_size: Tuple[int, int]
+    tile_step: Tuple[int, int]
+    overlap: Tuple[int, int]
+
     """
     Helper class to slice image into tiles and merge them back
     """
 
-    def __init__(self, image_shape, tile_size, tile_step=0, image_margin=0, weight="mean"):
+    def __init__(self, image_shape: Tuple[int, int], tile_size, tile_step=0, image_margin=0, weight="mean"):
         """
 
         :param image_shape: Shape of the source image (H, W)
@@ -67,14 +71,16 @@ class ImageSlicer:
         self.image_height = image_shape[0]
         self.image_width = image_shape[1]
 
-        if isinstance(tile_size, (tuple, list)):
-            assert len(tile_size) == 2
+        if isinstance(tile_size, (np.ndarray, Sequence)):
+            if len(tile_size) != 2:
+                raise ValueError(f"Tile size must have exactly 2 elements. Got: tile_size={tile_size}")
             self.tile_size = int(tile_size[0]), int(tile_size[1])
         else:
             self.tile_size = int(tile_size), int(tile_size)
 
-        if isinstance(tile_step, (tuple, list)):
-            assert len(tile_step) == 2
+        if isinstance(tile_step, (np.ndarray, Sequence)):
+            if len(tile_step) != 2:
+                raise ValueError(f"Tile size must have exactly 2 elements. Got: tile_step={tile_size}")
             self.tile_step = int(tile_step[0]), int(tile_step[1])
         else:
             self.tile_step = int(tile_step), int(tile_step)
@@ -88,7 +94,7 @@ class ImageSlicer:
         if self.tile_step[1] < 1 or self.tile_step[1] > self.tile_size[1]:
             raise ValueError()
 
-        overlap = [self.tile_size[0] - self.tile_step[0], self.tile_size[1] - self.tile_step[1]]
+        overlap = (self.tile_size[0] - self.tile_step[0], self.tile_size[1] - self.tile_step[1])
 
         self.margin_left = 0
         self.margin_right = 0
@@ -110,16 +116,15 @@ class ImageSlicer:
             self.margin_bottom = extra_h - self.margin_top
 
         else:
-            if (self.image_width - overlap[1] + 2 * image_margin) % self.tile_step[1] != 0:
-                raise ValueError()
+            if isinstance(image_margin, Sequence):
+                margin_left, margin_right, margin_top, margin_bottom = image_margin
+            else:
+                margin_left = margin_right = margin_top = margin_bottom = image_margin
 
-            if (self.image_height - overlap[0] + 2 * image_margin) % self.tile_step[0] != 0:
-                raise ValueError()
-
-            self.margin_left = image_margin
-            self.margin_right = image_margin
-            self.margin_top = image_margin
-            self.margin_bottom = image_margin
+            self.margin_left = margin_left
+            self.margin_right = margin_right
+            self.margin_top = margin_top
+            self.margin_bottom = margin_bottom
 
         crops = []
         bbox_crops = []
@@ -136,7 +141,9 @@ class ImageSlicer:
         self.crops = np.array(crops)
         self.bbox_crops = np.array(bbox_crops)
 
-    def iter_split(self, image: np.ndarray, border_type=cv2.BORDER_CONSTANT, value=0) -> Iterable:
+    def iter_split(
+        self, image: np.ndarray, border_type=cv2.BORDER_CONSTANT, value=0
+    ) -> Iterable[Tuple[np.ndarray, Tuple[int, int, int, int]]]:
         if (image.shape[0] != self.image_height) or (image.shape[1] != self.image_width):
             raise ValueError()
 
@@ -153,10 +160,10 @@ class ImageSlicer:
             if x < 0 or y < 0 or (x + tile_width) > image.shape[1] or (y + tile_height) > image.shape[0]:
                 tile = cv2.copyMakeBorder(
                     tile,
-                    max(0, -y),
-                    max(0, y + tile_height - image.shape[0]),
-                    max(0, -x),
-                    max(0, x + tile_width - image.shape[1]),
+                    top=max(0, -y),
+                    bottom=max(0, y + tile_height - image.shape[0]),
+                    left=max(0, -x),
+                    right=max(0, x + tile_width - image.shape[1]),
                     borderType=border_type,
                     value=value,
                 )
@@ -201,25 +208,29 @@ class ImageSlicer:
         assert image.shape[1] == self.image_width
 
         orig_shape_len = len(image.shape)
-        image = cv2.copyMakeBorder(
-            image,
-            self.margin_top,
-            self.margin_bottom,
-            self.margin_left,
-            self.margin_right,
-            borderType=border_type,
-            value=value,
-        )
+        x, y, tile_width, tile_height = self.bbox_crops[slice_index]
 
-        # This check recovers possible lack of last dummy dimension for single-channel images
-        if len(image.shape) != orig_shape_len:
-            image = np.expand_dims(image, axis=-1)
+        x1 = max(x, 0)
+        y1 = max(y, 0)
+        x2 = min(image.shape[1], x + tile_width)
+        y2 = min(image.shape[0], y + tile_height)
 
-        x, y, tile_width, tile_height = self.crops[slice_index]
+        tile = image[y1:y2, x1:x2]
+        if x < 0 or y < 0 or (x + tile_width) > image.shape[1] or (y + tile_height) > image.shape[0]:
+            tile = cv2.copyMakeBorder(
+                tile,
+                top=max(0, -y),
+                bottom=max(0, y + tile_height - image.shape[0]),
+                left=max(0, -x),
+                right=max(0, x + tile_width - image.shape[1]),
+                borderType=border_type,
+                value=value,
+            )
 
-        tile = image[y : y + tile_height, x : x + tile_width].copy()
-        assert tile.shape[0] == self.tile_size[0]
-        assert tile.shape[1] == self.tile_size[1]
+            # This check recovers possible lack of last dummy dimension for single-channel images
+            if len(tile.shape) != orig_shape_len:
+                tile = np.expand_dims(tile, axis=-1)
+
         return tile
 
     @property
@@ -316,16 +327,24 @@ class TileMerger:
         if len(batch) != len(crop_coords):
             raise ValueError("Number of images in batch does not correspond to number of coordinates")
 
-        batch = batch.to(device=self.image.device)
+        if batch.device != self.image.device:
+            batch = batch.to(device=self.image.device)
+
+        # Ensure that input batch dtype match the target dtyle of the accumulator
+        if batch.dtype != self.image.dtype:
+            batch = batch.type_as(self.image)
+
         for tile, (x, y, tile_width, tile_height) in zip(batch, crop_coords):
             self.image[:, y : y + tile_height, x : x + tile_width] += tile * self.weight
             self.norm_mask[:, y : y + tile_height, x : x + tile_width] += self.weight
 
+    @property
+    def device(self) -> torch.device:
+        return self.image.device
+
     def merge(self) -> torch.Tensor:
         return self.image / self.norm_mask
 
-
-@pytorch_toolbelt_deprecated("This class is deprecated and will be removed in 0.5.0. Please use TileMerger instead.")
-class CudaTileMerger(TileMerger):
-    def __init__(self, image_shape, channels, weight, device="cuda"):
-        super().__init__(image_shape, channels, weight, device)
+    def merge_(self) -> torch.Tensor:
+        self.image /= self.norm_mask
+        return self.image

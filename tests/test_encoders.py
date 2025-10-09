@@ -2,8 +2,9 @@ import pytest
 import torch
 
 import pytorch_toolbelt.modules.encoders as E
+from pytorch_toolbelt.modules import AbstractEncoder
 from pytorch_toolbelt.modules.backbone.inceptionv4 import inceptionv4
-from pytorch_toolbelt.utils.torch_utils import maybe_cuda, count_parameters
+from pytorch_toolbelt.utils.torch_utils import maybe_cuda, count_parameters, describe_outputs
 from pytorch_toolbelt.modules.encoders import timm
 
 skip_if_no_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
@@ -11,9 +12,30 @@ skip_if_no_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA
 
 @pytest.mark.parametrize(
     ["encoder", "encoder_params"],
+    [[E.MobileNetV3Large, {"layers": [0, 1, 2, 3, 4]}], [E.MobileNetV3Small, {"layers": [0, 1, 2, 3, 4]}]],
+)
+@torch.no_grad()
+@skip_if_no_cuda
+def test_mobilenetv3_encoders(encoder: E.EncoderModule, encoder_params):
+    net = encoder(**encoder_params).eval().change_input_channels(1)
+    print(net.__class__.__name__, count_parameters(net))
+    print(net.strides)
+    print(net.channels)
+    x = torch.rand((4, 1, 384, 256))
+    x = maybe_cuda(x)
+    net = maybe_cuda(net)
+    output = net(x)
+    assert len(output) == len(net.channels)
+    for feature_map, expected_stride, expected_channels in zip(output, net.strides, net.channels):
+        assert feature_map.size(1) == expected_channels
+        assert feature_map.size(2) * expected_stride == 384
+        assert feature_map.size(3) * expected_stride == 256
+
+
+@pytest.mark.parametrize(
+    ["encoder", "encoder_params"],
     [
         [E.MobilenetV2Encoder, {}],
-        [E.MobilenetV3Encoder, {}],
         [E.Resnet34Encoder, {"pretrained": False}],
         [E.Resnet50Encoder, {"pretrained": False}],
         [E.SEResNeXt50Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
@@ -165,7 +187,9 @@ def test_xresnet_encoder(encoder, encoder_params):
     ["encoder", "encoder_params"],
     [
         [timm.B0Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
+        [timm.B0Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4], "first_conv_stride_one": True}],
         [timm.B1Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
+        [timm.B1Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4], "first_conv_stride_one": True}],
         [timm.B2Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
         [timm.B3Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
         [timm.B4Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
@@ -194,15 +218,6 @@ def test_xresnet_encoder(encoder, encoder_params):
         [timm.NFNetF6Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
         [timm.NFNetF7Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
         #
-        [timm.NFNetF0SEncoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
-        [timm.NFNetF1SEncoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
-        [timm.NFNetF2SEncoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
-        [timm.NFNetF3SEncoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
-        [timm.NFNetF4SEncoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
-        [timm.NFNetF5SEncoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
-        [timm.NFNetF6SEncoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
-        [timm.NFNetF7SEncoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
-        #
         [timm.NFRegNetB0Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
         [timm.NFRegNetB1Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
         [timm.NFRegNetB2Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
@@ -213,7 +228,7 @@ def test_xresnet_encoder(encoder, encoder_params):
         [timm.TimmRes2Net101Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
         [timm.TimmRes2Next50Encoder, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
         # EfficientNet V2
-        [timm.TimmEfficientNetV2S, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
+        [timm.TimmEfficientNetV2, {"pretrained": False, "layers": [0, 1, 2, 3, 4]}],
     ],
 )
 @torch.no_grad()
@@ -234,6 +249,8 @@ def test_timm_encoders(encoder, encoder_params):
         assert feature_map.size(1) == expected_channels
         assert feature_map.size(2) * expected_stride == x.size(2)
         assert feature_map.size(3) * expected_stride == x.size(3)
+
+    print(describe_outputs(output))
 
 
 @pytest.mark.parametrize(
@@ -271,8 +288,8 @@ def test_hourglass_encoder(encoder, encoder_params):
 def test_supervised_hourglass_encoder(encoder, encoder_params):
     net = encoder(**encoder_params).eval()
     print(net.__class__.__name__, count_parameters(net))
-    print(net.strides)
-    print(net.channels)
+    print(net.get_output_spec())
+
     x = torch.rand((4, 3, 256, 256))
     x = maybe_cuda(x)
     net = maybe_cuda(net)
@@ -284,3 +301,66 @@ def test_supervised_hourglass_encoder(encoder, encoder_params):
         assert feature_map.size(1) == expected_channels
         assert feature_map.size(2) * expected_stride == 256
         assert feature_map.size(3) * expected_stride == 256
+
+
+@pytest.mark.parametrize(
+    ["encoder", "encoder_params"],
+    [
+        [E.SwinT, {}],
+        [E.SwinS, {}],
+        [E.SwinB, {}],
+        [E.SwinL, {}],
+    ],
+)
+@torch.no_grad()
+@skip_if_no_cuda
+def test_swin_encoder(encoder, encoder_params):
+    net = encoder(**encoder_params).change_input_channels(5).eval()
+    output_spec = net.get_output_spec()
+
+    print(net.__class__.__name__, count_parameters(net))
+    print(output_spec)
+
+    x = torch.rand((4, 5, 256, 256))
+    x = maybe_cuda(x)
+    net = maybe_cuda(net)
+    output = net(x)
+
+    assert len(output) == len(output_spec.channels)
+
+    for feature_map, expected_stride, expected_channels in zip(output, output_spec.strides, output_spec.channels):
+        assert feature_map.size(1) == expected_channels
+        assert feature_map.size(2) * expected_stride == x.size(2)
+        assert feature_map.size(3) * expected_stride == x.size(3)
+
+
+@pytest.mark.parametrize(
+    ["encoder", "encoder_params"],
+    [
+        [E.MitB0Encoder, {"pretrained": True}],
+        [E.MitB1Encoder, {"pretrained": True}],
+        [E.MitB2Encoder, {"pretrained": True}],
+        [E.MitB3Encoder, {"pretrained": True}],
+        [E.MitB4Encoder, {"pretrained": True}],
+        [E.MitB5Encoder, {"pretrained": True}],
+    ],
+)
+@torch.no_grad()
+@skip_if_no_cuda
+def test_mit_encoder(encoder, encoder_params):
+    encoder: AbstractEncoder = encoder(**encoder_params).change_input_channels(5).eval()
+    print(encoder.__class__.__name__, count_parameters(encoder, human_friendly=True))
+
+    output_spec = encoder.get_output_spec()
+    print(encoder.get_output_spec())
+    x = torch.rand((4, 5, 256, 256))
+    x = maybe_cuda(x)
+    encoder = maybe_cuda(encoder)
+    output = encoder(x)
+
+    assert len(output) == len(output_spec.channels)
+
+    for feature_map, expected_stride, expected_channels in zip(output, output_spec.strides, output_spec.channels):
+        assert feature_map.size(1) == expected_channels
+        assert feature_map.size(2) * expected_stride == x.size(2)
+        assert feature_map.size(3) * expected_stride == x.size(3)

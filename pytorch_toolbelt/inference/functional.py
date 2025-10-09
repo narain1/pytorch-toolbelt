@@ -1,3 +1,4 @@
+import itertools
 from collections.abc import Sized, Iterable
 from typing import Union, Tuple
 
@@ -7,26 +8,30 @@ from torch import Tensor
 from ..utils.support import pytorch_toolbelt_deprecated
 
 __all__ = [
-    "torch_none",
-    "torch_rot90",
-    "torch_rot90_cw",
-    "torch_rot90_ccw",
-    "torch_transpose_rot90_cw",
-    "torch_transpose_rot90_ccw",
-    "torch_rot90_ccw_transpose",
-    "torch_rot90_cw_transpose",
-    "torch_rot180",
-    "torch_rot270",
+    "geometric_mean",
+    "harmonic_mean",
+    "harmonic1p_mean",
+    "logodd_mean",
+    "log1p_mean",
+    "pad_image_tensor",
+    "pad_tensor_to_size",
     "torch_fliplr",
     "torch_flipud",
+    "torch_none",
+    "torch_rot180",
+    "torch_rot270",
+    "torch_rot90",
+    "torch_rot90_ccw",
+    "torch_rot90_ccw_transpose",
+    "torch_rot90_cw",
+    "torch_rot90_cw_transpose",
     "torch_transpose",
     "torch_transpose2",
     "torch_transpose_",
-    "pad_image_tensor",
+    "torch_transpose_rot90_ccw",
+    "torch_transpose_rot90_cw",
     "unpad_image_tensor",
     "unpad_xyxy_bboxes",
-    "geometric_mean",
-    "harmonic_mean",
 ]
 
 
@@ -140,7 +145,40 @@ def torch_transpose2(x: Tensor):
     return x.transpose(3, 2)
 
 
-def pad_image_tensor(image_tensor: Tensor, pad_size: Union[int, Tuple[int, int]] = 32):
+def pad_tensor_to_size(x: Tensor, size: Tuple[int, ...], mode="constant", value=0) -> Tuple[Tensor, Tuple[slice, ...]]:
+    """
+    Pad tensor to given size by appending elements to the beginning and end of each axis.
+
+    :param x: Input tensor of shape [B, C, *num_spatial_dims]
+    :param size: Target tensor size defined as an array of [num_spatial_dims] elements
+    :param mode: Padding mode, see torch.nn.functional.pad
+    :param value: Padding value, see torch.nn.functional.pad
+    :return: Tuple of padded tensor and crop parameters. Second argument can be used to reverse pad operation of model output
+    """
+    num_spatial_dims = len(size)
+    if num_spatial_dims != len(x.shape) - 2:
+        raise ValueError(f"Expected {num_spatial_dims} spatial dimensions, got {len(x.shape) - 2}")
+
+    spatial_dims = x.shape[-num_spatial_dims:]
+    padding = torch.tensor(size) - torch.tensor(spatial_dims)
+    padding_before = padding // 2
+    padding_after = padding - padding_before
+
+    padding_pairs = tuple(zip(padding_before.tolist(), padding_after.tolist()))
+    padding_params = tuple(itertools.chain(*reversed(padding_pairs)))
+
+    x = torch.nn.functional.pad(x, pad=padding_params, mode=mode, value=value)
+
+    crop_params = [slice(None), slice(None)] + [
+        slice(before, before + total_size)
+        for (before, after, total_size) in zip(padding_before, padding_after, spatial_dims)
+    ]
+    return x, crop_params
+
+
+def pad_image_tensor(
+    image_tensor: Tensor, pad_size: Union[int, Tuple[int, int]] = 32
+) -> Tuple[Tensor, Tuple[int, int, int, int]]:
     """Pad input tensor to make it's height and width dividable by @pad_size
 
     :param image_tensor: 4D image tensor of shape NCHW
@@ -209,7 +247,7 @@ def unpad_xyxy_bboxes(bboxes_tensor: torch.Tensor, pad, dim=-1):
     return bboxes_tensor - pad
 
 
-def geometric_mean(x: Tensor, dim: int) -> Tensor:
+def geometric_mean(x: Tensor, dim: int, keepdim=False) -> Tensor:
     """
     Compute geometric mean along given dimension.
     This implementation assume values are in range (0...1) (Probabilities)
@@ -220,13 +258,13 @@ def geometric_mean(x: Tensor, dim: int) -> Tensor:
     Returns:
         Tensor
     """
-    return x.log().mean(dim=dim).exp()
+    return x.log().mean(dim=dim, keepdim=keepdim).exp()
 
 
-def harmonic_mean(x: Tensor, dim: int, eps: float = 1e-6) -> Tensor:
+def harmonic_mean(x: Tensor, dim: int, eps: float = 1e-6, keepdim=False) -> Tensor:
     """
     Compute harmonic mean along given dimension.
-    This implementation assume values are in range (0...1) (Probabilities)
+
     Args:
         x: Input tensor of arbitrary shape
         dim: Dimension to reduce
@@ -235,6 +273,61 @@ def harmonic_mean(x: Tensor, dim: int, eps: float = 1e-6) -> Tensor:
         Tensor
     """
     x = torch.reciprocal(x.clamp_min(eps))
-    x = torch.mean(x, dim=dim)
+    x = torch.mean(x, dim=dim, keepdim=keepdim)
     x = torch.reciprocal(x.clamp_min(eps))
+    return x
+
+
+def harmonic1p_mean(x: Tensor, dim: int) -> Tensor:
+    """
+    Compute harmonic mean along given dimension.
+
+    Args:
+        x: Input tensor of arbitrary shape
+        dim: Dimension to reduce
+
+    Returns:
+        Tensor
+    """
+    x = torch.reciprocal(x + 1)
+    x = torch.mean(x, dim=dim)
+    x = torch.reciprocal(x) - 1
+    return x
+
+
+def logodd_mean(x: Tensor, dim: int, eps: float = 1e-6) -> Tensor:
+    """
+    Compute log-odd mean along given dimension.
+    logodd = log(p / (1 - p))
+
+    This implementation assume values are in range [0, 1] (Probabilities)
+    Args:
+        x: Input tensor of arbitrary shape
+        dim: Dimension to reduce
+
+    Returns:
+        Tensor
+    """
+    x = x.clamp(min=eps, max=1.0 - eps)
+    x = torch.log(x / (1 - x))
+    x = torch.mean(x, dim=dim)
+    x = torch.exp(x) / (1 + torch.exp(x))
+    return x
+
+
+def log1p_mean(x: Tensor, dim: int) -> Tensor:
+    """
+    Compute average log(x+1) and them compute exp.
+    Requires all inputs to be non-negative
+
+    Args:
+        x: Input tensor of arbitrary shape
+        dim: Dimension to reduce
+
+    Returns:
+        Tensor
+    """
+    x = torch.log1p(x)
+    x = torch.mean(x, dim=dim)
+    x = torch.exp(x) - 1
     return x

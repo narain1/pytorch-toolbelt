@@ -5,8 +5,10 @@ import torch
 from pytorch_toolbelt import losses as L
 from torch import nn
 
+from pytorch_toolbelt.losses import BinaryFocalLoss, CrossEntropyFocalLoss
 
-def test_focal_loss_with_logits():
+
+def test_sigmoid_focal_loss_with_logits():
     input_good = torch.tensor([10, -10, 10]).float()
     input_bad = torch.tensor([-1, 2, 0]).float()
     target = torch.tensor([1, 0, 1])
@@ -14,6 +16,9 @@ def test_focal_loss_with_logits():
     loss_good = F.focal_loss_with_logits(input_good, target)
     loss_bad = F.focal_loss_with_logits(input_bad, target)
     assert loss_good < loss_bad
+
+    loss_cls = BinaryFocalLoss()
+    assert loss_cls(input_good, target) < loss_cls(input_bad, target)
 
 
 def test_softmax_focal_loss_with_logits():
@@ -24,6 +29,9 @@ def test_softmax_focal_loss_with_logits():
     loss_good = F.softmax_focal_loss_with_logits(input_good, target)
     loss_bad = F.softmax_focal_loss_with_logits(input_bad, target)
     assert loss_good < loss_bad
+
+    loss_cls = CrossEntropyFocalLoss()
+    assert loss_cls(input_good, target) < loss_cls(input_bad, target)
 
 
 @pytest.mark.parametrize(
@@ -231,7 +239,8 @@ def test_soft_bce_loss():
     [
         L.BiTemperedLogisticLoss(t1=1, t2=0.8),
         L.FocalCosineLoss(),
-        L.FocalLoss(),
+        L.BinaryFocalLoss(),
+        L.CrossEntropyFocalLoss(),
         L.SoftF1Loss(),
         L.SoftCrossEntropyLoss(),
     ],
@@ -242,4 +251,21 @@ def test_classification_losses(criterion):
     y_true = torch.tensor([0, 1, 2, 3]).long()
 
     loss = criterion(y_pred, y_true)
+    print(loss)
+
+
+def test_binary_bi_tempered_loss():
+    loss = L.BinaryBiTemperedLogisticLoss(t1=0.9, t2=3.0, ignore_index=-100)
+
+    y_pred = torch.randn((4, 1, 512, 512))
+    y_true = (y_pred > 0).type_as(y_pred)
+    y_true[:, :, ::10, ::20] = -100
+    loss_value = loss(y_pred, y_true)
+    assert len(loss_value.size()) == 0
+
+
+def test_bbce():
+    x = torch.tensor([0, 0, 0, 0, 0]).float()
+    y = torch.tensor([0, 1, 1, 1, 1]).float()
+    loss = L.balanced_binary_cross_entropy_with_logits(x, y, gamma=1, reduction="none")
     print(loss)

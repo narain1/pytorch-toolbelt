@@ -62,9 +62,12 @@ ACT_SILU = "silu"
 ACT_SOFTPLUS = "softplus"
 ACT_SWISH = "swish"
 ACT_SWISH_NAIVE = "swish_naive"
+ACT_SOFTMAX = "softmax"
 
 # This version reduces memory overhead of Swish during training by
 # recomputing torch.sigmoid(x) in backward instead of saving it.
+
+
 @torch.jit.script
 def swish_jit_fwd(x):
     return x.mul(torch.sigmoid(x))
@@ -251,7 +254,8 @@ def get_activation_block(activation_name: str):
         ACT_SOFTPLUS: nn.Softplus,
         ACT_SWISH: Swish,
         ACT_SWISH_NAIVE: SwishNaive,
-        ACT_SIGMOID: nn.Sigmoid
+        ACT_SIGMOID: nn.Sigmoid,
+        ACT_SOFTMAX: nn.Softmax,
     }
 
     return ACTIVATIONS[activation_name.lower()]
@@ -262,11 +266,25 @@ def instantiate_activation_block(activation_name: str, **kwargs) -> nn.Module:
 
     act_params = {}
 
-    if "inplace" in kwargs and activation_name in {ACT_RELU, ACT_RELU6, ACT_LEAKY_RELU, ACT_SELU, ACT_CELU, ACT_ELU}:
+    if "inplace" in kwargs and activation_name in {
+        ACT_RELU,
+        ACT_RELU6,
+        ACT_LEAKY_RELU,
+        ACT_SELU,
+        ACT_SILU,
+        ACT_CELU,
+        ACT_ELU,
+    }:
         act_params["inplace"] = kwargs["inplace"]
 
     if "slope" in kwargs and activation_name in {ACT_LEAKY_RELU}:
         act_params["negative_slope"] = kwargs["slope"]
+
+    if activation_name == ACT_PRELU:
+        act_params["num_parameters"] = kwargs["num_parameters"]
+
+    if "dim" in kwargs and activation_name in {ACT_SOFTMAX}:
+        act_params["dim"] = kwargs["dim"]
 
     return block(**act_params)
 
